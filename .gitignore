@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# PyInstaller — NOTE: build.spec is a required source file, do NOT ignore *.spec
+build/
+dist/
+
+# IDE / tooling
+.opencode/
+.atl/
+.idea/
+.vscode/
+.vs/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,6 @@
+# Runtime
+customtkinter
+
+# Desarrollo
+pyinstaller
+pytest
