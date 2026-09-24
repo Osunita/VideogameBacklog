@@ -3,13 +3,17 @@
 NO ejecuta SQL: toda consulta y persistencia pasa por db.py. Las opciones del
 filtro de plataforma se derivan en memoria de list_games() sin filtros (D4:
 la interfaz de db.py §6 no expone una función DISTINCT).
+
+Exportar/Importar (cambio export-import) solo abren diálogos, muestran avisos
+y refrescan: la lógica JSON vive en export_import.py (cero SQL, sin GUI).
 """
 
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
 import db
+import export_import
 from config import STATUSES
 
 from .game_form import GameForm
@@ -25,7 +29,8 @@ _STATUS_BY_LABEL = {status_label(s): s for s in STATUSES}
 
 
 class App(ctk.CTk):
-    """Ventana principal (§4): filtros + "Añadir juego" + listado en tarjetas.
+    """Ventana principal (§4): filtros + "Añadir juego"/Exportar/Importar +
+    listado en tarjetas.
 
     Editar/Eliminar viven en CADA tarjeta (game_list llama a _edit_game /
     _delete_game con el id) → sin selección global ni avisos "selecciona un
@@ -51,19 +56,41 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        # Cabecera: filtros a la izquierda y "Añadir juego" arriba a la
-        # derecha con color de acento (fondo distinto al resto de la UI).
+        # Cabecera: filtros a la izquierda; a la derecha, el grupo de
+        # acciones: Exportar/Importar en estilo SECUNDARIO (borde fino, sin
+        # relleno, mismo corner_radius/height) y "Añadir juego" arriba a la
+        # derecha con color de acento → sigue siendo el único botón acento.
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+
+        actions = ctk.CTkFrame(header, fg_color="transparent")
+        actions.pack(side="right", padx=(12, 0))
+        # side="left" en orden de lectura: Exportar | Importar | Añadir juego.
+        for texto, comando in (
+            ("Exportar", self._export_games),
+            ("Importar", self._import_games),
+        ):
+            ctk.CTkButton(
+                actions,
+                text=texto,
+                fg_color="transparent",
+                border_width=1,
+                border_color="#565656",
+                hover_color="#3d3d3d",
+                text_color="#ecebe4",
+                corner_radius=8,
+                height=34,
+                command=comando,
+            ).pack(side="left", padx=(0, 8))
         ctk.CTkButton(
-            header,
+            actions,
             text="Añadir juego",
             fg_color="#1f538d",
             hover_color="#1f6ebb",
             corner_radius=8,
             height=34,
             command=self._add_game,
-        ).pack(side="right", padx=(12, 0))
+        ).pack(side="left")
 
         # Barra de filtros: estado, plataforma, búsqueda por título (§4).
         # Mismo comportamiento que siempre (mismos parámetros de list_games);
@@ -201,4 +228,56 @@ class App(ctk.CTk):
         except db.GameNotFoundError as exc:
             # §10: aviso y se refresca la lista.
             messagebox.showwarning("Eliminar", str(exc), parent=self)
+        self._refresh()
+
+    # ------------------------------------------------------- export/import --
+    # Solo diálogos, avisos y refresh: la lógica JSON (leer/parsear/validar/
+    # fusionar) vive en export_import.py (D7-D10, AC-008..AC-011).
+
+    def _export_games(self) -> None:
+        """Guardado .json → export_games → aviso con el nº exportados (AC-008)."""
+        path = filedialog.asksaveasfilename(
+            title="Exportar backlog",
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+            initialfile="backlog.json",
+            parent=self,
+        )
+        if not path:
+            return  # diálogo cancelado → no-op, sin aviso (AC-008)
+        try:
+            total = export_import.export_games(path)
+        except export_import.ExportImportError as exc:
+            # p. ej. ruta no escribible: aviso de error, SIN aviso de éxito.
+            messagebox.showerror("Exportar", str(exc), parent=self)
+            return
+        messagebox.showinfo(
+            "Exportar",
+            f"{total} juego{'' if total == 1 else 's'} "
+            f"exportado{'' if total == 1 else 's'}.",
+            parent=self,
+        )
+
+    def _import_games(self) -> None:
+        """Selección .json → import_games (todo-o-nada) → aviso + refresh."""
+        path = filedialog.askopenfilename(
+            title="Importar backlog",
+            filetypes=[("JSON", "*.json")],
+            parent=self,
+        )
+        if not path:
+            return  # diálogo cancelado → no-op, sin aviso (AC-008)
+        try:
+            resultado = export_import.import_games(path)
+        except export_import.ExportImportError as exc:
+            # Rechazo total (AC-010): la BD NO se tocó → la lista se queda
+            # como estaba; un único modal con TODOS los motivos ("registro i:").
+            messagebox.showerror("Importar", str(exc), parent=self)
+            return
+        messagebox.showinfo(
+            "Importar",
+            f"{resultado.created} creado{'' if resultado.created == 1 else 's'}, "
+            f"{resultado.updated} actualizado{'' if resultado.updated == 1 else 's'}.",
+            parent=self,
+        )
         self._refresh()
