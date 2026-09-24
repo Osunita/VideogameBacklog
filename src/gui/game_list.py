@@ -1,19 +1,34 @@
-"""Listado de juegos (§4).
+"""Listado de juegos por tarjetas (§4).
 
-Tabla con ttk.Treeview estilizado al tema oscuro (D3). NO accede a datos:
-solo pinta las filas filtradas que recibe desde app.py. Muestra el
-placeholder "Sin resultados" cuando la lista está vacía (§10 — no es un error).
-Al pasar el ratón por una fila aparece una tarjeta flotante (tooltip, solo
-presentación) con progress_note y/o episode_url de ese juego.
+CTkScrollableFrame con UN CTkFrame por juego: indicador de color del estado a
+la izquierda (barra, sin iconos), título en negrita, línea secundaria
+"plataforma · horas", píldora de estado a la derecha y botones ✎/✕ SIEMPRE
+visibles. NO accesa a datos: solo pinta las tarjetas filtradas que recibe desde
+app.py; las acciones se delegan en los callbacks on_edit/on_delete que inyecta
+app.py (mismo patrón que el on_submit de game_form — §4 prohíbe que esta capa
+toque db.py). Muestra el placeholder "Sin resultados" cuando la lista está
+vacía (§10 — no es un error). Al pasar el ratón por una tarjeta aparece una
+tarjeta flotante (tooltip, solo presentación) con progress_note y/o
+episode_url de ese juego.
 """
 
-from tkinter import TclError, ttk
+from tkinter import TclError
 
 import customtkinter as ctk
 
 from models import Game
 
-_STYLE_READY = False
+# Colores SOLO de presentación: estado → (indicador, fondo píldora, texto
+# píldora). El píldora usa un tinte claro del color de estado con texto en tono
+# oscuro del mismo tono (legible). Los valores de config.STATUSES no cambian.
+_STATUS_COLORS = {
+    "pendiente": ("#9e9e9e", "#e4e4e4", "#5f5f5f"),
+    "en_curso": ("#3b8ed0", "#d6e7f7", "#1f5f9e"),
+    "abandonado": ("#f39c12", "#fdeecd", "#b9770e"),
+    "completado": ("#2ecc71", "#d8f3e0", "#1e8449"),
+}
+_FALLBACK_COLORS = _STATUS_COLORS["pendiente"]  # estado fuera de catálogo
+_CARD_BG = "#2b2b2b"  # la ventana (#1f1f1f) es más oscura → las tarjetas destacan
 
 
 def status_label(status: str) -> str:
@@ -42,74 +57,28 @@ def _tooltip_text(game: Game) -> str:
     return "\n".join(lines) if lines else "No hay info"
 
 
-def _ensure_dark_style() -> None:
-    """Configura (una sola vez) el estilo oscuro del Treeview (D3)."""
-    global _STYLE_READY
-    if _STYLE_READY:
-        return
-    style = ttk.Style()
-    style.theme_use("clam")
-    style.configure(
-        "Game.Treeview",
-        background="#2b2b2b",
-        fieldbackground="#2b2b2b",
-        foreground="#ecebe4",
-        borderwidth=0,
-        rowheight=26,
-        font=("Segoe UI", 10),
-    )
-    style.configure(
-        "Game.Treeview.Heading",
-        background="#343638",
-        foreground="#ecebe4",
-        relief="flat",
-        font=("Segoe UI", 10, "bold"),
-    )
-    style.map(
-        "Game.Treeview",
-        background=[("selected", "#1f538d")],
-        foreground=[("selected", "#ffffff")],
-    )
-    _STYLE_READY = True
-
-
 class GameList(ctk.CTkFrame):
-    """Listado de juegos: Treeview + scrollbar + placeholder + tooltip de hover (§4, §10)."""
+    """Listado en tarjetas: scroll + placeholder + tooltip de hover (§4, §10).
 
-    _COLUMNS = (
-        ("title", "Título", 320, True),
-        ("platform", "Plataforma", 140, False),
-        ("status", "Estado", 120, False),
-        ("hours_played", "Horas", 80, False),
-    )
+    on_edit(id) / on_delete(id) los inyecta app.py al construir la lista: esta
+    capa solo pinta y delega (patrón on_submit de game_form, D5).
+    """
 
     _TOOLTIP_DELAY_MS = 250  # retardo (ms) de dwell antes de mostrar la tarjeta
+    _CARD_HEIGHT = 64  # alto fijo de cada tarjeta (una sola línea de título)
 
-    def __init__(self, master, **kwargs) -> None:
+    def __init__(self, master, on_edit=None, on_delete=None, **kwargs) -> None:
         super().__init__(master, **kwargs)
-        _ensure_dark_style()
+        self._on_edit = on_edit
+        self._on_delete = on_delete
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        columns = [name for name, _, _, _ in self._COLUMNS]
-        self._tree = ttk.Treeview(
-            self,
-            columns=columns,
-            show="headings",
-            selectmode="browse",
-            style="Game.Treeview",
-        )
-        for name, label, width, stretch in self._COLUMNS:
-            self._tree.heading(name, text=label)
-            self._tree.column(name, width=width, stretch=stretch, anchor="w")
+        self._scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._scroll.grid(row=0, column=0, sticky="nsew")
+        self._scroll.grid_columnconfigure(0, weight=1)
 
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self._tree.yview)
-        self._tree.configure(yscrollcommand=scrollbar.set)
-
-        self._tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        # Placeholder "Sin resultados": se superpone al centro de la tabla vacía.
+        # Placeholder "Sin resultados": se superpone al centro del listado vacío.
         self._placeholder = ctk.CTkLabel(
             self,
             text="Sin resultados",
@@ -125,7 +94,7 @@ class GameList(ctk.CTkFrame):
         self._tooltip = ctk.CTkToplevel(self, fg_color="#2b2b2b")
         self._tooltip.withdraw()
         self._tooltip.overrideredirect(True)  # sin barra de título ni marco
-        self._tooltip.attributes("-topmost", True)  # siempre encima de la tabla
+        self._tooltip.attributes("-topmost", True)  # siempre encima del listado
         self._tooltip_label = ctk.CTkLabel(
             self._tooltip,
             anchor="w",
@@ -138,34 +107,119 @@ class GameList(ctk.CTkFrame):
         )
         self._tooltip_label.pack()
 
-        # Juegos ya pintados, indexados por iid de la fila (render los repuebla):
-        # el hover lee progress_note/episode_url de aquí, nunca de db.py.
+        # Juegos ya pintados y sus tarjetas, indexados por clave de juego
+        # (render los repuebla): el hover lee progress_note/episode_url de
+        # aquí, nunca de db.py.
         self._games: dict[str, Game] = {}
+        self._cards: dict[str, ctk.CTkFrame] = {}
         self._tooltip_iid: str | None = None
         self._tooltip_after: str | None = None
-        self._tree.bind("<Motion>", self._on_row_motion)
-        self._tree.bind("<Leave>", self._on_tree_leave)
 
     def render(self, games: list[Game]) -> None:
-        """Vacía la tabla y pinta solo las filas recibidas (§4)."""
+        """Vacía la lista y pinta solo las tarjetas recibidas (§4)."""
         self._hide_tooltip()
         self._games = {}
-        self._tree.delete(*self._tree.get_children())
+        for card in self._cards.values():
+            card.destroy()
+        self._cards = {}
         for index, game in enumerate(games, start=1):
-            iid = str(game.id) if game.id is not None else f"row-{index}"
-            self._games[iid] = game  # referencia para el tooltip de hover
-            self._tree.insert(
-                "",
-                "end",
-                iid=iid,
-                values=(
-                    game.title,
-                    game.platform,
-                    status_label(game.status),  # solo display; game.status no cambia
-                    f"{game.hours_played:g}",
-                ),
-            )
+            key = str(game.id) if game.id is not None else f"row-{index}"
+            self._games[key] = game  # referencia para el tooltip y callbacks
+            self._cards[key] = self._build_card(game, key, index - 1)
         self._show_placeholder(not games)
+
+    def _build_card(self, game: Game, key: str, row: int) -> ctk.CTkFrame:
+        """Construye UNA tarjeta: indicador · texto · píldora · ✎ · ✕."""
+        indicator_color, pill_bg, pill_text = _STATUS_COLORS.get(
+            game.status, _FALLBACK_COLORS
+        )
+
+        card = ctk.CTkFrame(
+            self._scroll, fg_color=_CARD_BG, corner_radius=10, height=self._CARD_HEIGHT
+        )
+        card.grid(row=row, column=0, sticky="ew", padx=6, pady=(0, 8))
+        card.grid_columnconfigure(1, weight=1)
+        card.grid_rowconfigure(0, weight=1)
+
+        # Indicador de estado: barra de color a la izquierda (sin iconos).
+        ctk.CTkFrame(
+            card, width=8, height=40, fg_color=indicator_color, corner_radius=4
+        ).grid(row=0, column=0, sticky="ns", padx=(12, 12), pady=8)
+
+        # Título en negrita + línea secundaria "plataforma · horas".
+        text = ctk.CTkFrame(card, fg_color="transparent")
+        text.grid(row=0, column=1, sticky="nsew", padx=(0, 12), pady=(6, 6))
+        ctk.CTkLabel(
+            text,
+            text=game.title,
+            anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#ecebe4",
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            text,
+            text=f"{game.platform} · {game.hours_played:g} h",
+            anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color="#9e9e9e",
+        ).pack(fill="x")
+
+        # Píldora de estado: etiqueta visible ("en curso", sin guion bajo),
+        # fondo en tinte claro y texto en tono oscuro del color del estado.
+        pill = ctk.CTkFrame(card, fg_color=pill_bg, corner_radius=12)
+        pill.grid(row=0, column=2)
+        ctk.CTkLabel(
+            pill,
+            text=status_label(game.status),
+            fg_color="transparent",
+            text_color=pill_text,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(padx=10, pady=3)
+
+        # Acciones por tarjeta, SIEMPRE visibles (glifos Unicode, sin assets).
+        ctk.CTkButton(
+            card,
+            text="✎",
+            width=36,
+            height=30,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#565656",
+            hover_color="#3d3d3d",
+            text_color="#ecebe4",
+            command=lambda k=key: self._edit_pressed(k),
+        ).grid(row=0, column=3, padx=(10, 4))
+        ctk.CTkButton(
+            card,
+            text="✕",
+            width=36,
+            height=30,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
+            border_color="#7a4444",
+            hover_color="#a33333",
+            text_color="#ecebe4",
+            command=lambda k=key: self._delete_pressed(k),
+        ).grid(row=0, column=4, padx=(0, 8))
+
+        self._bind_hover(card, key)
+        return card
+
+    def _edit_pressed(self, key: str) -> None:
+        """✎ de la tarjeta: oculta el tooltip y delega en app.py (§4)."""
+        self._hide_tooltip()
+        game = self._games.get(key)
+        if game is not None and self._on_edit is not None:
+            self._on_edit(game.id)
+
+    def _delete_pressed(self, key: str) -> None:
+        """✕ de la tarjeta: oculta el tooltip y delega en app.py (§4)."""
+        self._hide_tooltip()
+        game = self._games.get(key)
+        if game is not None and self._on_delete is not None:
+            self._on_delete(game.id)
 
     def _show_placeholder(self, show: bool) -> None:
         if show and not self._placeholder_visible:
@@ -176,36 +230,80 @@ class GameList(ctk.CTkFrame):
 
     # ------------------------------------------------------------- tooltip --
 
-    def _on_row_motion(self, event) -> None:
-        """Hover sobre una fila: sigue al cursor o programa la tarjeta (§ display)."""
-        iid = self._tree.identify_row(event.y)
-        if not iid or iid not in self._games:
-            self._hide_tooltip()  # hueco sin fila o cabecera → nada que mostrar
-            return
-        if iid == self._tooltip_iid and self._tooltip.winfo_viewable():
-            # Misma fila: solo reposiciona, sin recrear ni parpadear.
+    def _bind_hover(self, widget, key: str) -> None:
+        """Enlaza Enter/Motion/Leave en la tarjeta y TODOS sus hijos.
+
+        Los widgets de CustomTkinter redirigen .bind() a sus canvas/labels
+        internos (por eso se recorre el subárbol completo) y se usa add="+" para
+        no pisar los handlers internos de hover de los botones. Enter y Motion
+        comparten handler: sigue al cursor o reprograma el dwell de 250 ms
+        (mismo comportamiento que el barrido de filas del Treeview).
+        """
+        for sequence, handler in (
+            ("<Enter>", lambda e: self._on_card_hover(e, key)),
+            ("<Motion>", lambda e: self._on_card_hover(e, key)),
+            ("<Leave>", lambda e: self._on_card_leave(e, key)),
+        ):
+            try:
+                widget.bind(sequence, handler, "+")
+            except NotImplementedError:
+                pass  # widget sin .bind() propio (no ocurre con los actuales)
+        for child in widget.winfo_children():
+            self._bind_hover(child, key)
+
+    def _on_card_hover(self, event, key: str) -> None:
+        """Hover sobre una tarjeta: sigue al cursor o programa la tarjeta (§ display)."""
+        if key not in self._cards:
+            return  # la lista se repintó y esta tarjeta ya no existe
+        if key == self._tooltip_iid and self._tooltip.winfo_viewable():
+            # Misma tarjeta visible: solo reposiciona, sin recrear ni parpadear.
             self._place_tooltip(event.x_root, event.y_root)
             return
-        # Fila nueva: oculta la anterior YA (nunca datos obsoletos) y
-        # programa la aparición con retardo para evitar parpadeo al barrer.
+        # Tarjeta nueva (o movimiento durante el dwell): oculta la anterior YA
+        # (nunca datos obsoletos) y (re)programa la aparición con retardo para
+        # evitar parpadeo al barrer: solo aparece si el cursor se detiene 250 ms.
         self._hide_tooltip()
-        self._tooltip_iid = iid
+        self._tooltip_iid = key
         x_root, y_root = event.x_root, event.y_root
         self._tooltip_after = self.after(
             self._TOOLTIP_DELAY_MS,
-            lambda: self._show_tooltip(iid, x_root, y_root),
+            lambda: self._show_tooltip(key, x_root, y_root),
         )
 
-    def _on_tree_leave(self, event=None) -> None:
-        """El cursor salió de la tabla: la tarjeta desaparece al instante."""
+    def _on_card_leave(self, event, key: str) -> None:
+        """El cursor salió de la tarjeta: la tarjeta desaparece al instante."""
+        if self._tooltip_iid != key:
+            return  # el hover ya apunta a otra tarjeta (o no hay hover)
+        if self._pointer_inside_card(event, key):
+            return  # cruzó a un widget HIJO de la misma tarjeta: no oculta nada
         self._hide_tooltip()
 
+    def _pointer_inside_card(self, event, key: str) -> bool:
+        """True si (x_root, y_root) sigue dentro del árbol de la tarjeta `key`.
+
+        Los eventos <Leave> también saltan al entrar en un hijo de la tarjeta
+        (canvas, label, botón…): se comprueba con winfo_containing + cadena de
+        masters para distinguir "entró a un hijo" de "salió de la tarjeta".
+        """
+        card = self._cards.get(key)
+        if card is None:
+            return False
+        widget = self.winfo_toplevel().winfo_containing(
+            event.x_root, event.y_root
+        )
+        card_path = str(card)
+        while widget is not None:
+            if widget is card or str(widget) == card_path:
+                return True
+            widget = widget.master
+        return False
+
     def _show_tooltip(self, iid: str, x_root: int, y_root: int) -> None:
-        """Muestra la tarjeta de `iid` junto al cursor (si la fila sigue ahí)."""
+        """Muestra la tarjeta de `iid` junto al cursor (si la tarjeta sigue ahí)."""
         self._tooltip_after = None
         game = self._games.get(iid)
         if game is None or self._tooltip_iid != iid:
-            return  # la lista se repintó o el hover ya no apunta a esta fila
+            return  # la lista se repintó o el hover ya no apunta a esta tarjeta
         self._tooltip_label.configure(text=_tooltip_text(game))
         self._place_tooltip(x_root, y_root)
         self._tooltip.deiconify()
@@ -233,13 +331,3 @@ class GameList(ctk.CTkFrame):
             self._tooltip_after = None
         self._tooltip.withdraw()
         self._tooltip_iid = None
-
-    def get_selected_id(self) -> int | None:
-        """Id (int) del juego seleccionado, o None si no hay selección."""
-        selection = self._tree.selection()
-        if not selection:
-            return None
-        try:
-            return int(selection[0])
-        except ValueError:
-            return None

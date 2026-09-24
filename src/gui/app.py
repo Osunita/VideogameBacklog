@@ -25,11 +25,18 @@ _STATUS_BY_LABEL = {status_label(s): s for s in STATUSES}
 
 
 class App(ctk.CTk):
-    """Ventana principal (§4): filtros + listado + botones CRUD."""
+    """Ventana principal (§4): filtros + "Añadir juego" + listado en tarjetas.
+
+    Editar/Eliminar viven en CADA tarjeta (game_list llama a _edit_game /
+    _delete_game con el id) → sin selección global ni avisos "selecciona un
+    juego".
+    """
 
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark")
+        # Fondo de ventana más oscuro que las tarjetas (#2b2b2b) → destacan.
+        self.configure(fg_color="#1f1f1f")
         self.title("Nunca acabo los juegos")
         self.geometry("920x600")
         self.minsize(760, 440)
@@ -44,9 +51,25 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
+        # Cabecera: filtros a la izquierda y "Añadir juego" arriba a la
+        # derecha con color de acento (fondo distinto al resto de la UI).
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        ctk.CTkButton(
+            header,
+            text="Añadir juego",
+            fg_color="#1f538d",
+            hover_color="#1f6ebb",
+            corner_radius=8,
+            height=34,
+            command=self._add_game,
+        ).pack(side="right", padx=(12, 0))
+
         # Barra de filtros: estado, plataforma, búsqueda por título (§4).
-        filters = ctk.CTkFrame(self, fg_color="transparent")
-        filters.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 6))
+        # Mismo comportamiento que siempre (mismos parámetros de list_games);
+        # solo cambia la estética: corner_radius y más espaciado.
+        filters = ctk.CTkFrame(header, fg_color="transparent")
+        filters.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(filters, text="Estado").pack(side="left")
         self._status_var = ctk.StringVar(value=_ALL_STATUS)
@@ -56,7 +79,8 @@ class App(ctk.CTk):
             values=[_ALL_STATUS, *(status_label(s) for s in STATUSES)],
             command=self._on_filter_changed,
             width=150,
-        ).pack(side="left", padx=(6, 18))
+            corner_radius=8,
+        ).pack(side="left", padx=(8, 26))
 
         ctk.CTkLabel(filters, text="Plataforma").pack(side="left")
         self._platform_var = ctk.StringVar(value=_ALL_PLATFORM)
@@ -66,8 +90,9 @@ class App(ctk.CTk):
             values=self._platform_values,
             command=self._on_filter_changed,
             width=160,
+            corner_radius=8,
         )
-        self._platform_menu.pack(side="left", padx=(6, 18))
+        self._platform_menu.pack(side="left", padx=(8, 26))
 
         self._search_var = ctk.StringVar()
         search = ctk.CTkEntry(
@@ -75,28 +100,17 @@ class App(ctk.CTk):
             textvariable=self._search_var,
             placeholder_text="Buscar por título…",
             width=240,
+            corner_radius=8,
         )
         search.pack(side="left")
         search.bind("<KeyRelease>", self._on_filter_changed)
 
-        # Listado (recibe los datos ya filtrados desde aquí, §4).
-        self.game_list = GameList(self)
-        self.game_list.grid(row=1, column=0, sticky="nsew", padx=14, pady=6)
-
-        # Acciones CRUD.
-        actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=2, column=0, sticky="ew", padx=14, pady=(6, 14))
-        ctk.CTkButton(actions, text="Añadir", command=self._add_game).pack(side="left")
-        ctk.CTkButton(
-            actions, text="Editar", command=self._edit_game
-        ).pack(side="left", padx=10)
-        ctk.CTkButton(
-            actions,
-            text="Eliminar",
-            fg_color="#a33333",
-            hover_color="#c33333",
-            command=self._delete_game,
-        ).pack(side="left")
+        # Listado (recibe los datos ya filtrados desde aquí, §4): editar y
+        # eliminar se delegan en esta clase desde cada tarjeta.
+        self.game_list = GameList(
+            self, on_edit=self._edit_game, on_delete=self._delete_game
+        )
+        self.game_list.grid(row=1, column=0, sticky="nsew", padx=16, pady=(4, 16))
 
     # --------------------------------------------------------------- filtros --
 
@@ -136,15 +150,7 @@ class App(ctk.CTk):
         self.game_list.render(games)
 
     # ----------------------------------------------------------------- CRUD --
-
-    def _require_selection(self, action: str) -> int | None:
-        game_id = self.game_list.get_selected_id()
-        if game_id is None:
-            messagebox.showwarning(
-                action, "Selecciona un juego primero.", parent=self
-            )
-            return None
-        return game_id
+    # Sin selección global: el id llega desde el ✎/✕ de cada tarjeta.
 
     def _add_game(self) -> None:
         GameForm(self, on_submit=self._create_game)
@@ -153,10 +159,7 @@ class App(ctk.CTk):
         db.create_game(**data)
         self._refresh()
 
-    def _edit_game(self) -> None:
-        game_id = self._require_selection("Editar")
-        if game_id is None:
-            return
+    def _edit_game(self, game_id: int) -> None:
         game = db.get_game(game_id)
         if game is None:
             # §10: aviso + refresh ante id que ya no existe.
@@ -185,10 +188,8 @@ class App(ctk.CTk):
             raise ValueError(str(exc)) from exc
         self._refresh()
 
-    def _delete_game(self) -> None:
-        game_id = self._require_selection("Eliminar")
-        if game_id is None:
-            return
+    def _delete_game(self, game_id: int) -> None:
+        # §10: confirmación siempre (viene del ✕ de una tarjeta, ya hay id).
         if not messagebox.askyesno(
             "Eliminar",
             "¿Seguro que quieres eliminar este juego?",
